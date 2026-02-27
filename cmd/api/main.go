@@ -24,6 +24,7 @@ import (
 	"defab-erp/internal/attribute"
 	"defab-erp/internal/category"
 	"defab-erp/internal/product"
+	"defab-erp/internal/productdescription"
 	"defab-erp/internal/user"
 	"defab-erp/internal/variant"
 
@@ -74,6 +75,10 @@ func main() {
 
 	productStore := product.NewStore(database)
 	productHandler := product.NewHandler(productStore)
+
+	
+	pdStore := productdescription.NewStore(database)
+	pdHandler := productdescription.NewHandler(pdStore)
 
 	attributeStore := attribute.NewStore(database)
 	attributeHandler := attribute.NewHandler(attributeStore)
@@ -170,6 +175,13 @@ func main() {
 	productHandler,
 	)
 
+	
+	productdescription.RegisterRoutes(
+		protected.Group("",
+			middleware.RequireRole(model.RoleSuperAdmin),
+		),
+		pdHandler,
+	)
 
 	attribute.RegisterRoutes(
 	protected.Group("",
