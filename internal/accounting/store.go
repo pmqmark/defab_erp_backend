@@ -30,8 +30,10 @@ func (s *Store) CreateAccountGroup(in CreateAccountGroupInput) (string, error) {
 
 func (s *Store) ListAccountGroups() ([]AccountGroup, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, parent_id, nature, created_at
-		FROM account_groups ORDER BY name
+		SELECT g.id, g.name, g.parent_id, p.name, g.nature, g.created_at
+		FROM account_groups g
+		LEFT JOIN account_groups p ON p.id = g.parent_id
+		ORDER BY g.name
 	`)
 	if err != nil {
 		return nil, err
@@ -41,7 +43,7 @@ func (s *Store) ListAccountGroups() ([]AccountGroup, error) {
 	var groups []AccountGroup
 	for rows.Next() {
 		var g AccountGroup
-		if err := rows.Scan(&g.ID, &g.Name, &g.ParentID, &g.Nature, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.ParentID, &g.ParentName, &g.Nature, &g.CreatedAt); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -329,7 +331,7 @@ func (s *Store) GetVoucher(id string) (*Voucher, error) {
 }
 
 // ListVouchers returns vouchers filtered by type, date range, branch.
-func (s *Store) ListVouchers(voucherType, from, to, branchID string, limit, offset int) ([]Voucher, int, error) {
+func (s *Store) ListVouchers(voucherType, from, to, branchID, search string, limit, offset int) ([]Voucher, int, error) {
 	where := "WHERE 1=1"
 	args := []interface{}{}
 	idx := 1
@@ -354,6 +356,11 @@ func (s *Store) ListVouchers(voucherType, from, to, branchID string, limit, offs
 		args = append(args, branchID)
 		idx++
 	}
+	if search != "" {
+		where += fmt.Sprintf(" AND (v.voucher_number ILIKE $%d OR v.narration ILIKE $%d)", idx, idx)
+		args = append(args, "%"+search+"%")
+		idx++
+	}
 
 	// Count total
 	var total int
@@ -366,12 +373,17 @@ func (s *Store) ListVouchers(voucherType, from, to, branchID string, limit, offs
 	query := fmt.Sprintf(`
 		SELECT v.id, v.voucher_number, v.voucher_type, v.voucher_date,
 		       COALESCE(v.narration,''), COALESCE(v.ref_type,''), COALESCE(v.ref_id::text,''),
+		       COALESCE(v.financial_year_id::text,''), COALESCE(fy.name,''),
+		       COALESCE(v.branch_id::text,''), COALESCE(b.name,''),
+		       COALESCE(v.created_by::text,''),
 		       v.is_cancelled, v.created_at,
 		       COALESCE(SUM(vl.debit),0), COALESCE(SUM(vl.credit),0)
 		FROM vouchers v
 		LEFT JOIN voucher_lines vl ON vl.voucher_id = v.id
+		LEFT JOIN financial_years fy ON fy.id = v.financial_year_id
+		LEFT JOIN branches b ON b.id = v.branch_id
 		%s
-		GROUP BY v.id
+		GROUP BY v.id, fy.name, b.name
 		ORDER BY v.voucher_date DESC, v.created_at DESC
 		LIMIT $%d OFFSET $%d
 	`, where, idx, idx+1)
@@ -384,15 +396,60 @@ func (s *Store) ListVouchers(voucherType, from, to, branchID string, limit, offs
 	defer rows.Close()
 
 	var vouchers []Voucher
+	voucherIDs := []string{}
 	for rows.Next() {
 		var v Voucher
 		if err := rows.Scan(&v.ID, &v.VoucherNumber, &v.VoucherType, &v.VoucherDate,
 			&v.Narration, &v.RefType, &v.RefID,
+			&v.FinancialYearID, &v.FinancialYearName,
+			&v.BranchID, &v.BranchName, &v.CreatedBy,
 			&v.IsCancelled, &v.CreatedAt, &v.TotalDebit, &v.TotalCredit); err != nil {
 			return nil, 0, err
 		}
 		vouchers = append(vouchers, v)
+		voucherIDs = append(voucherIDs, v.ID)
 	}
+
+	// Batch-fetch lines for all vouchers
+	if len(voucherIDs) > 0 {
+		placeholders := ""
+		lineArgs := []interface{}{}
+		for i, id := range voucherIDs {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += fmt.Sprintf("$%d", i+1)
+			lineArgs = append(lineArgs, id)
+		}
+		lineRows, err := s.db.Query(fmt.Sprintf(`
+			SELECT vl.id, vl.voucher_id, vl.ledger_account_id,
+			       COALESCE(la.name,''), COALESCE(la.code,''),
+			       vl.debit, vl.credit, COALESCE(vl.narration,'')
+			FROM voucher_lines vl
+			LEFT JOIN ledger_accounts la ON la.id = vl.ledger_account_id
+			WHERE vl.voucher_id IN (%s)
+			ORDER BY vl.debit DESC
+		`, placeholders), lineArgs...)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer lineRows.Close()
+
+		lineMap := map[string][]VoucherLine{}
+		for lineRows.Next() {
+			var l VoucherLine
+			if err := lineRows.Scan(&l.ID, &l.VoucherID, &l.LedgerAccountID,
+				&l.AccountName, &l.AccountCode,
+				&l.Debit, &l.Credit, &l.Narration); err != nil {
+				return nil, 0, err
+			}
+			lineMap[l.VoucherID] = append(lineMap[l.VoucherID], l)
+		}
+		for i := range vouchers {
+			vouchers[i].Lines = lineMap[vouchers[i].ID]
+		}
+	}
+
 	return vouchers, total, nil
 }
 

@@ -407,18 +407,22 @@ func main() {
 		rawMaterialHandler,
 	)
 
-	piMiddleware := protected.Group("",
-		middleware.RequireRole(
-			model.RoleSuperAdmin,
-			model.RoleStoreManager,
-		),
-	)
 	purchaseinvoice.RegisterInvoiceRoutes(
-		piMiddleware.Group("/purchase-invoices"),
+		protected.Group("/purchase-invoices",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+			),
+		),
 		purchaseInvoiceHandler,
 	)
 	purchaseinvoice.RegisterPaymentRoutes(
-		piMiddleware.Group("/supplier-payments"),
+		protected.Group("/supplier-payments",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+			),
+		),
 		purchaseInvoiceHandler,
 	)
 
@@ -427,6 +431,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleAccountsManager,
+				model.RoleStoreManager,
 			),
 		),
 		accountingHandler,

@@ -63,11 +63,10 @@ func (r *Recorder) RecordSalesInvoice(salesInvoiceID, userID string) error {
 	}
 
 	totalDiscount := inv.DiscountAmount + inv.BillDiscount
-	salesRevenue := inv.SubAmount - totalDiscount
 
 	lines := []VoucherLine{
 		{LedgerAccountID: LedgerAccountsReceiv, Debit: inv.NetAmount, Narration: "Customer receivable"},
-		{LedgerAccountID: LedgerSalesRevenue, Credit: salesRevenue, Narration: "Sales revenue"},
+		{LedgerAccountID: LedgerSalesRevenue, Credit: inv.SubAmount, Narration: "Sales revenue"},
 	}
 	if inv.GSTAmount > 0 {
 		lines = append(lines, VoucherLine{

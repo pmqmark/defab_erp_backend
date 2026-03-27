@@ -40,11 +40,12 @@ const (
 
 // AccountGroup represents a node in the chart-of-accounts tree.
 type AccountGroup struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	ParentID  *string   `json:"parent_id"`
-	Nature    string    `json:"nature"`
-	CreatedAt time.Time `json:"created_at"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	ParentID   *string   `json:"parent_id"`
+	ParentName *string   `json:"parent_name,omitempty"`
+	Nature     string    `json:"nature"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // LedgerAccount is an individual account in the chart of accounts.
@@ -74,21 +75,23 @@ type FinancialYear struct {
 
 // Voucher is the Tally-style journal entry header.
 type Voucher struct {
-	ID              string        `json:"id"`
-	VoucherNumber   string        `json:"voucher_number"`
-	VoucherType     string        `json:"voucher_type"`
-	VoucherDate     string        `json:"voucher_date"`
-	Narration       string        `json:"narration"`
-	RefType         string        `json:"ref_type"`
-	RefID           string        `json:"ref_id"`
-	FinancialYearID string        `json:"financial_year_id"`
-	BranchID        string        `json:"branch_id"`
-	IsCancelled     bool          `json:"is_cancelled"`
-	CreatedBy       string        `json:"created_by"`
-	CreatedAt       time.Time     `json:"created_at"`
-	Lines           []VoucherLine `json:"lines"`
-	TotalDebit      float64       `json:"total_debit"`
-	TotalCredit     float64       `json:"total_credit"`
+	ID                string        `json:"id"`
+	VoucherNumber     string        `json:"voucher_number"`
+	VoucherType       string        `json:"voucher_type"`
+	VoucherDate       string        `json:"voucher_date"`
+	Narration         string        `json:"narration"`
+	RefType           string        `json:"ref_type"`
+	RefID             string        `json:"ref_id"`
+	FinancialYearID   string        `json:"financial_year_id"`
+	FinancialYearName string        `json:"financial_year_name,omitempty"`
+	BranchID          string        `json:"branch_id"`
+	BranchName        string        `json:"branch_name,omitempty"`
+	IsCancelled       bool          `json:"is_cancelled"`
+	CreatedBy         string        `json:"created_by"`
+	CreatedAt         time.Time     `json:"created_at"`
+	Lines             []VoucherLine `json:"lines"`
+	TotalDebit        float64       `json:"total_debit"`
+	TotalCredit       float64       `json:"total_credit"`
 }
 
 // VoucherLine is a single debit or credit entry inside a voucher.

@@ -190,6 +190,7 @@ func (h *Handler) ListVouchers(c *fiber.Ctx) error {
 	from := c.Query("from")
 	to := c.Query("to")
 	branchID := c.Query("branch_id")
+	search := c.Query("search")
 	limit, _ := strconv.Atoi(c.Query("limit", "20"))
 	offset, _ := strconv.Atoi(c.Query("offset", "0"))
 	if limit <= 0 || limit > 100 {
@@ -199,7 +200,7 @@ func (h *Handler) ListVouchers(c *fiber.Ctx) error {
 		offset = 0
 	}
 
-	vouchers, total, err := h.store.ListVouchers(voucherType, from, to, branchID, limit, offset)
+	vouchers, total, err := h.store.ListVouchers(voucherType, from, to, branchID, search, limit, offset)
 	if err != nil {
 		log.Println("list vouchers error:", err)
 		return httperr.Internal(c)
