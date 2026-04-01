@@ -35,9 +35,11 @@ import (
 
 	"defab-erp/internal/core/storage"
 
+	"defab-erp/internal/accounting"
 	"defab-erp/internal/billing"
 	"defab-erp/internal/coupon"
 	"defab-erp/internal/customer"
+	"defab-erp/internal/dashboard"
 	"defab-erp/internal/goodsreceipt"
 	"defab-erp/internal/purchase"
 	"defab-erp/internal/purchaseinvoice"
@@ -48,6 +50,12 @@ import (
 	"defab-erp/internal/stock"
 	"defab-erp/internal/stockrequest"
 	"defab-erp/internal/supplier"
+
+	ecomCart "defab-erp/internal/ecom/cart"
+	ecomCustomer "defab-erp/internal/ecom/customer"
+	ecomMw "defab-erp/internal/ecom/middleware"
+	ecomOrder "defab-erp/internal/ecom/order"
+	ecomProduct "defab-erp/internal/ecom/product"
 )
 
 func main() {
@@ -147,6 +155,30 @@ func main() {
 	billingStore := billing.NewStore(database, redisClient)
 	billingHandler := billing.NewHandler(billingStore)
 
+	accountingStore := accounting.NewStore(database)
+	accountingRecorder := accounting.NewRecorder(database, accountingStore)
+	accountingHandler := accounting.NewHandler(accountingStore, accountingRecorder)
+
+	dashboardStore := dashboard.NewStore(database)
+	dashboardHandler := dashboard.NewHandler(dashboardStore)
+
+	// ── Ecom stores & handlers ──
+	ecomCustomerStore := ecomCustomer.NewStore(database)
+	ecomCustomerHandler := ecomCustomer.NewHandler(ecomCustomerStore)
+
+	ecomProductStore := ecomProduct.NewStore(database)
+	ecomProductHandler := ecomProduct.NewHandler(ecomProductStore)
+
+	ecomCartStore := ecomCart.NewStore(database)
+	ecomCartHandler := ecomCart.NewHandler(ecomCartStore)
+
+	ecomOrderStore := ecomOrder.NewStore(database)
+	ecomOrderHandler := ecomOrder.NewHandler(ecomOrderStore)
+
+	// Wire auto-recording into billing & purchase handlers
+	billingHandler.SetRecorder(accountingRecorder)
+	purchaseInvoiceHandler.SetRecorder(accountingRecorder)
+
 	// Warm Redis cache with all variants
 	if err := billingStore.WarmCache(); err != nil {
 		log.Println("⚠ Cache warm-up failed:", err)
@@ -170,6 +202,19 @@ func main() {
 
 	auth.RegisterRoutes(api, authHandler)
 
+	// ═══════════════════════════════════════════
+	// E-COMMERCE PUBLIC ROUTES (before protected group)
+	// ═══════════════════════════════════════════
+	ecom := api.Group("/ecom")
+	ecomCustomer.RegisterPublicRoutes(ecom.Group("/auth"), ecomCustomerHandler)
+	ecomProduct.RegisterRoutes(ecom.Group("/products"), ecomProductHandler)
+
+	// E-COMMERCE PROTECTED ROUTES (before ERP protected group)
+	ecomProtected := ecom.Group("", ecomMw.EcomJWTProtected(database))
+	ecomCustomer.RegisterProtectedRoutes(ecomProtected, ecomCustomerHandler)
+	ecomCart.RegisterRoutes(ecomProtected.Group("/cart"), ecomCartHandler)
+	ecomOrder.RegisterCustomerRoutes(ecomProtected.Group("/orders"), ecomOrderHandler)
+
 	// Quick test route for products
 	api.Get("/products/test", func(c *fiber.Ctx) error {
 		// Just to prove store works
@@ -188,7 +233,7 @@ func main() {
 
 	branch.RegisterRoutes(
 		protected.Group("/branches",
-			middleware.RequireRole(model.RoleSuperAdmin),
+			middleware.RequireRole(model.RoleSuperAdmin, model.RoleAccountsManager),
 		),
 		branchHandler,
 	)
@@ -198,6 +243,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		warehouseHandler,
@@ -205,7 +251,7 @@ func main() {
 
 	warehouse.RegisterRoutes(
 		protected.Group("/warehouses",
-			middleware.RequireRole(model.RoleSuperAdmin),
+			middleware.RequireRole(model.RoleSuperAdmin, model.RoleAccountsManager),
 		),
 		warehouseHandler,
 	)
@@ -222,6 +268,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		categoryHandler,
@@ -232,6 +279,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		productHandler,
@@ -239,7 +287,7 @@ func main() {
 
 	productdescription.RegisterRoutes(
 		protected.Group("/product-descriptions",
-			middleware.RequireRole(model.RoleSuperAdmin),
+			middleware.RequireRole(model.RoleSuperAdmin, model.RoleAccountsManager),
 		),
 		pdHandler,
 	)
@@ -249,6 +297,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		attributeHandler,
@@ -259,6 +308,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		variantHandler,
@@ -269,6 +319,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		supplierHandler,
@@ -279,6 +330,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		salespersonHandler,
@@ -290,6 +342,7 @@ func main() {
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
 				model.RoleSalesPerson,
+				model.RoleAccountsManager,
 			),
 		),
 		customerHandler,
@@ -301,6 +354,7 @@ func main() {
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
 				model.RoleSalesPerson,
+				model.RoleAccountsManager,
 			),
 		),
 		salesOrderHandler,
@@ -312,6 +366,7 @@ func main() {
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
 				model.RoleSalesPerson,
+				model.RoleAccountsManager,
 			),
 		),
 		salesInvoiceHandler,
@@ -323,6 +378,7 @@ func main() {
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
 				model.RoleSalesPerson,
+				model.RoleAccountsManager,
 			),
 		),
 		billingHandler,
@@ -333,6 +389,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		purchaseHandler,
@@ -343,6 +400,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		goodsHandler,
@@ -353,6 +411,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		stockTransferHandler,
@@ -363,6 +422,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		stockHandler,
@@ -373,6 +433,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		stockRequestHandler,
@@ -383,6 +444,7 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		couponHandler,
@@ -393,24 +455,53 @@ func main() {
 			middleware.RequireRole(
 				model.RoleSuperAdmin,
 				model.RoleStoreManager,
+				model.RoleAccountsManager,
 			),
 		),
 		rawMaterialHandler,
 	)
 
-	piMiddleware := protected.Group("",
-		middleware.RequireRole(
-			model.RoleSuperAdmin,
-			model.RoleStoreManager,
-		),
-	)
 	purchaseinvoice.RegisterInvoiceRoutes(
-		piMiddleware.Group("/purchase-invoices"),
+		protected.Group("/purchase-invoices",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+				model.RoleAccountsManager,
+			),
+		),
 		purchaseInvoiceHandler,
 	)
 	purchaseinvoice.RegisterPaymentRoutes(
-		piMiddleware.Group("/supplier-payments"),
+		protected.Group("/supplier-payments",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+				model.RoleAccountsManager,
+			),
+		),
 		purchaseInvoiceHandler,
+	)
+
+	accounting.RegisterRoutes(
+		protected.Group("/accounting",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleAccountsManager,
+				model.RoleStoreManager,
+			),
+		),
+		accountingHandler,
+	)
+
+	dashboard.RegisterRoutes(
+		protected.Group("/dashboard",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleAccountsManager,
+				model.RoleStoreManager,
+			),
+		),
+		dashboardHandler,
 	)
 
 	protected.Get("/me", func(c *fiber.Ctx) error {
@@ -423,6 +514,21 @@ func main() {
 		func(c *fiber.Ctx) error {
 			return c.SendString("Hello SuperAdmin")
 		},
+	)
+
+	// ═══════════════════════════════════════════
+	// E-COMMERCE ADMIN ROUTES (ERP staff managing ecom orders)
+	// ═══════════════════════════════════════════
+
+	// Admin: ERP staff managing ecom orders
+	ecomOrder.RegisterAdminRoutes(
+		protected.Group("/ecom-orders",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+			),
+		),
+		ecomOrderHandler,
 	)
 
 	// Start server
