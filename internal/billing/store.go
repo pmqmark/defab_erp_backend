@@ -37,7 +37,8 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	}
 	defer tx.Rollback()
 
-	now := time.Now()
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	now := time.Now().In(ist)
 
 	// ──────────────────────────────────────────
 	// 1. Find or create customer
@@ -100,7 +101,24 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 			in.Items[i].UnitPrice = price
 			item.UnitPrice = price
 		}
-		lineTotal := float64(item.Quantity) * item.UnitPrice
+		lineTotal := item.Quantity * item.UnitPrice
+
+		// Auto-resolve TaxPercent based on item type:
+		// PRODUCT: threshold on unit price (per-item cost)
+		// MATERIAL: threshold on line total (quantity × unit price)
+		if item.ItemType == "MATERIAL" {
+			if lineTotal > 2500 {
+				in.Items[i].TaxPercent = 18
+			} else {
+				in.Items[i].TaxPercent = 5
+			}
+		} else { // PRODUCT or empty
+			if item.UnitPrice > 2500 {
+				in.Items[i].TaxPercent = 18
+			} else {
+				in.Items[i].TaxPercent = 5
+			}
+		}
 
 		// Resolve item discount: percent → flat
 		itemDisc := item.Discount
@@ -130,7 +148,7 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 
 	// Proportionally distribute tax across items based on taxable amount
 	for _, item := range in.Items {
-		lineTotal := float64(item.Quantity) * item.UnitPrice
+		lineTotal := item.Quantity * item.UnitPrice
 		// Proportional share of bill discount for this item
 		var itemBillDiscount float64
 		if subtotal > 0 {
@@ -190,7 +208,7 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	// ──────────────────────────────────────────
 	type itemCalc struct {
 		variantID  string
-		quantity   int
+		quantity   float64
 		unitPrice  float64
 		discount   float64
 		taxPercent float64
@@ -200,7 +218,7 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	var itemCalcs []itemCalc
 
 	for _, item := range in.Items {
-		lineTotal := float64(item.Quantity) * item.UnitPrice
+		lineTotal := item.Quantity * item.UnitPrice
 		var itemBillDisc float64
 		if subtotal > 0 {
 			itemBillDisc = billDiscount * lineTotal / subtotal
@@ -400,7 +418,11 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 			"unit_price":   ic.unitPrice,
 			"discount":     ic.discount,
 			"tax_percent":  ic.taxPercent,
+			"cgst_percent": ic.taxPercent / 2,
+			"sgst_percent": ic.taxPercent / 2,
 			"tax_amount":   ic.taxAmount,
+			"cgst_amount":  ic.taxAmount / 2,
+			"sgst_amount":  ic.taxAmount / 2,
 			"total_price":  ic.totalPrice,
 		})
 	}
@@ -440,6 +462,9 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 		"item_discount":  discountTotal,
 		"bill_discount":  billDiscount,
 		"total_discount": discountTotal + billDiscount,
+		"cgst":           taxTotal / 2,
+		"sgst":           taxTotal / 2,
+		"total_gst":      taxTotal,
 		"tax_total":      taxTotal,
 		"grand_total":    grandTotal,
 		"paid_amount":    totalPaid,
@@ -531,7 +556,11 @@ func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 			"unit_price":   uPrice,
 			"discount":     disc,
 			"tax_percent":  taxPct,
+			"cgst_percent": taxPct / 2,
+			"sgst_percent": taxPct / 2,
 			"tax_amount":   taxAmt,
+			"cgst_amount":  taxAmt / 2,
+			"sgst_amount":  taxAmt / 2,
 			"total_price":  totPrice,
 		})
 	}
@@ -576,6 +605,9 @@ func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 		"sub_amount":       subAmount,
 		"discount_amount":  discountAmount,
 		"bill_discount":    billDiscountAmt,
+		"cgst":             gstAmount / 2,
+		"sgst":             gstAmount / 2,
+		"total_gst":        gstAmount,
 		"gst_amount":       gstAmount,
 		"round_off":        roundOff,
 		"net_amount":       netAmount,
@@ -734,7 +766,8 @@ func (s *Store) AddPayment(invoiceID string, p PaymentInput) (map[string]interfa
 	}
 
 	// Insert payment record
-	now := time.Now()
+	ist, _ := time.LoadLocation("Asia/Kolkata")
+	now := time.Now().In(ist)
 	_, err = tx.Exec(`
 		INSERT INTO sales_payments
 			(sales_invoice_id, amount, payment_method, reference, paid_at)
