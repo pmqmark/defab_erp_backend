@@ -36,11 +36,14 @@ import (
 	"defab-erp/internal/core/storage"
 
 	"defab-erp/internal/accounting"
+	"defab-erp/internal/attendance"
 	"defab-erp/internal/billing"
 	"defab-erp/internal/coupon"
 	"defab-erp/internal/customer"
 	"defab-erp/internal/dashboard"
+	"defab-erp/internal/employee"
 	"defab-erp/internal/goodsreceipt"
+	"defab-erp/internal/jobinvoice"
 	"defab-erp/internal/joborder"
 	"defab-erp/internal/production"
 	"defab-erp/internal/purchase"
@@ -175,8 +178,17 @@ func main() {
 	jobOrderStore := joborder.NewStore(database)
 	jobOrderHandler := joborder.NewHandler(jobOrderStore)
 
+	jobInvoiceStore := jobinvoice.NewStore(database)
+	jobInvoiceHandler := jobinvoice.NewHandler(jobInvoiceStore)
+
 	productionStore := production.NewStore(database)
 	productionHandler := production.NewHandler(productionStore)
+
+	employeeStore := employee.NewStore(database)
+	employeeHandler := employee.NewHandler(employeeStore)
+
+	attendanceStore := attendance.NewStore(database)
+	attendanceHandler := attendance.NewHandler(attendanceStore)
 
 	// ── Ecom stores & handlers ──
 	ecomCustomerStore := ecomCustomer.NewStore(database)
@@ -559,6 +571,40 @@ func main() {
 			),
 		),
 		productionHandler,
+	)
+
+	jobinvoice.RegisterRoutes(
+		protected.Group("/job-invoices",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+				model.RoleAccountsManager,
+			),
+		),
+		jobInvoiceHandler,
+	)
+
+	employee.RegisterRoutes(
+		protected.Group("/employees",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+			),
+		),
+		employeeHandler,
+	)
+
+	attendance.RegisterRoutes(
+		protected.Group("/attendance",
+			middleware.RequireRole(
+				model.RoleSuperAdmin,
+				model.RoleStoreManager,
+				model.RoleAccountsManager,
+				model.RoleSalesPerson,
+				model.RoleEmployee,
+			),
+		),
+		attendanceHandler,
 	)
 
 	protected.Get("/me", func(c *fiber.Ctx) error {
