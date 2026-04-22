@@ -1,18 +1,22 @@
 package order
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	rdb *redis.Client
 }
 
-func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+func NewStore(db *sql.DB, rdb *redis.Client) *Store {
+	return &Store{db: db, rdb: rdb}
 }
 
 // Checkout creates an order from the customer's cart.
@@ -22,6 +26,13 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	// 0. Resolve CENTRAL warehouse ID (used for stock deduction)
+	var centralWarehouseID string
+	err = tx.QueryRow(`SELECT id FROM warehouses WHERE type = 'CENTRAL' LIMIT 1`).Scan(&centralWarehouseID)
+	if err != nil {
+		return nil, fmt.Errorf("central warehouse not configured")
+	}
 
 	// 1. Get cart items with variant details
 	rows, err := tx.Query(`
@@ -64,7 +75,53 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 		return nil, fmt.Errorf("cart is empty")
 	}
 
-	// 2. Calculate totals
+	// 2. Acquire per-variant Redis locks to prevent concurrent checkouts for the same items.
+	//    FOR UPDATE inside the transaction is the hard DB-level guard; Redis is the fast early reject.
+	ctx := context.Background()
+	var lockedKeys []string
+	if s.rdb != nil {
+		for _, it := range items {
+			key := "lock:checkout:variant:" + it.VariantID
+			ok, err := s.rdb.SetNX(ctx, key, 1, 10*time.Second).Result()
+			if err == nil && ok {
+				lockedKeys = append(lockedKeys, key)
+			} else {
+				// Release already-acquired locks before returning
+				if len(lockedKeys) > 0 {
+					s.rdb.Del(ctx, lockedKeys...)
+				}
+				return nil, fmt.Errorf("another checkout is already in progress for %s, please try again", it.SKU)
+			}
+		}
+		// Ensure all locks are released when the function exits
+		defer func() {
+			if len(lockedKeys) > 0 {
+				s.rdb.Del(ctx, lockedKeys...)
+			}
+		}()
+	}
+
+	// 3. Validate CENTRAL warehouse stock with SELECT FOR UPDATE (row-level DB lock).
+	//    This serializes concurrent transactions even if Redis is unavailable.
+	for _, it := range items {
+		var centralStock float64
+		err := tx.QueryRow(`
+			SELECT COALESCE(SUM(st.quantity), 0)
+			FROM stocks st
+			JOIN warehouses w ON w.id = st.warehouse_id
+			WHERE st.variant_id = $1 AND w.type = 'CENTRAL'
+			FOR UPDATE
+		`, it.VariantID).Scan(&centralStock)
+		if err != nil {
+			return nil, fmt.Errorf("stock check failed for %s: %w", it.SKU, err)
+		}
+		if centralStock < float64(it.Quantity) {
+			return nil, fmt.Errorf("insufficient stock for %s (available: %.0f, requested: %d)",
+				it.SKU, centralStock, it.Quantity)
+		}
+	}
+
+	// 4. Calculate totals
 	var subTotal float64
 	var itemCount int
 	for _, it := range items {
@@ -76,7 +133,7 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 	grandTotal := subTotal - 0 + 0 + shippingCharge // discount=0, tax=0 for now
 	grandTotal = math.Round(grandTotal*100) / 100
 
-	// 3. Snapshot the shipping address
+	// 5. Snapshot the shipping address
 	var shippingName, shippingPhone, shippingAddr, shippingCity, shippingState, shippingPincode string
 	if in.AddressID != "" {
 		err = tx.QueryRow(`
@@ -91,12 +148,12 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 		}
 	}
 
-	// 4. Generate order number
+	// 6. Generate order number
 	var seq int
 	tx.QueryRow(`SELECT nextval('ecom_order_seq')`).Scan(&seq)
 	orderNumber := fmt.Sprintf("ECOM-%05d", seq)
 
-	// 5. Insert order
+	// 7. Insert order
 	var orderID string
 	err = tx.QueryRow(`
 		INSERT INTO ecom_orders (
@@ -119,7 +176,7 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 		return nil, fmt.Errorf("failed to create order: %w", err)
 	}
 
-	// 6. Insert order items
+	// 8. Insert order items
 	for _, it := range items {
 		lineTotal := it.Price * float64(it.Quantity)
 		_, err = tx.Exec(`
@@ -131,7 +188,31 @@ func (s *Store) Checkout(customerID string, in CheckoutInput) (map[string]interf
 		}
 	}
 
-	// 7. Clear the cart
+	// 9. Deduct stock from CENTRAL warehouse and record stock movements
+	for _, it := range items {
+		// Reduce stock quantity
+		_, err = tx.Exec(`
+			UPDATE stocks SET quantity = quantity - $1
+			WHERE variant_id = $2 AND warehouse_id = $3
+		`, it.Quantity, it.VariantID, centralWarehouseID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to deduct stock for variant %s: %w", it.SKU, err)
+		}
+
+		// Record stock movement (OUT from CENTRAL)
+		_, err = tx.Exec(`
+			INSERT INTO stock_movements (
+				variant_id, from_warehouse_id, quantity,
+				movement_type, reference, status
+			) VALUES ($1, $2, $3, 'OUT', $4, 'COMPLETED')
+		`, it.VariantID, centralWarehouseID, it.Quantity,
+			fmt.Sprintf("ECOM_ORDER:%s", orderNumber))
+		if err != nil {
+			return nil, fmt.Errorf("failed to record stock movement for variant %s: %w", it.SKU, err)
+		}
+	}
+
+	// 11. Clear the cart
 	tx.Exec(`
 		DELETE FROM ecom_cart_items
 		WHERE cart_id = (SELECT id FROM ecom_carts WHERE customer_id = $1)
@@ -294,7 +375,7 @@ func (s *Store) GetOrder(customerID, orderID string) (map[string]interface{}, er
 	return order, nil
 }
 
-// CancelOrder allows customer to cancel a PENDING order.
+// CancelOrder allows customer to cancel a PENDING order and restocks CENTRAL warehouse.
 func (s *Store) CancelOrder(customerID, orderID string) error {
 	res, err := s.db.Exec(`
 		UPDATE ecom_orders SET status = 'CANCELLED', updated_at = NOW()
@@ -307,6 +388,36 @@ func (s *Store) CancelOrder(customerID, orderID string) error {
 	if n == 0 {
 		return fmt.Errorf("order not found or cannot be cancelled")
 	}
+
+	// Restock CENTRAL warehouse
+	var centralWarehouseID string
+	if err := s.db.QueryRow(`SELECT id FROM warehouses WHERE type = 'CENTRAL' LIMIT 1`).Scan(&centralWarehouseID); err != nil {
+		return nil // order is cancelled; best-effort restock
+	}
+
+	rows, err := s.db.Query(`SELECT variant_id, quantity FROM ecom_order_items WHERE order_id = $1`, orderID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var variantID string
+		var qty int
+		if err := rows.Scan(&variantID, &qty); err != nil {
+			continue
+		}
+		s.db.Exec(`
+			UPDATE stocks SET quantity = quantity + $1
+			WHERE variant_id = $2 AND warehouse_id = $3
+		`, qty, variantID, centralWarehouseID)
+		s.db.Exec(`
+			INSERT INTO stock_movements
+			  (variant_id, to_warehouse_id, quantity, movement_type, reference, status)
+			VALUES ($1, $2, $3, 'IN', $4, 'COMPLETED')
+		`, variantID, centralWarehouseID, qty, fmt.Sprintf("ECOM_CANCEL:%s", orderID))
+	}
+
 	return nil
 }
 

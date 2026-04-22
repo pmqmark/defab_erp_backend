@@ -51,8 +51,11 @@ func (h *Handler) AddItem(c *fiber.Ctx) error {
 	}
 
 	if err := h.store.AddItem(cust.ID, in.VariantID, in.Quantity); err != nil {
-		if err.Error() == "variant not found or inactive" {
+		switch err.Error() {
+		case "variant not found or inactive":
 			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+		case "insufficient stock":
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(500).JSON(fiber.Map{"error": "failed to add item"})
 	}
@@ -74,13 +77,28 @@ func (h *Handler) UpdateItem(c *fiber.Ctx) error {
 	}
 
 	if err := h.store.UpdateItemQty(cust.ID, itemID, in.Quantity); err != nil {
-		if err.Error() == "cart item not found" {
+		switch err.Error() {
+		case "cart item not found":
 			return c.Status(404).JSON(fiber.Map{"error": err.Error()})
+		case "insufficient stock":
+			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 		return c.Status(500).JSON(fiber.Map{"error": "update failed"})
 	}
 
 	return c.JSON(fiber.Map{"message": "cart item updated"})
+}
+
+// GET /ecom/cart/count
+func (h *Handler) Count(c *fiber.Ctx) error {
+	cust := c.Locals("ecom_customer").(*ecomMw.EcomCustomer)
+
+	count, err := h.store.GetCartCount(cust.ID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to get cart count"})
+	}
+
+	return c.JSON(fiber.Map{"count": count})
 }
 
 // DELETE /ecom/cart/items/:id

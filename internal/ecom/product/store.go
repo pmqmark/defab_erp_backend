@@ -2,6 +2,7 @@ package product
 
 import (
 	"database/sql"
+	"fmt"
 	"math"
 	"strconv"
 )
@@ -15,10 +16,18 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // ListProducts returns paginated products visible on web.
-func (s *Store) ListProducts(categoryID string, search string, page, limit int) ([]map[string]interface{}, int, error) {
+// Filters: categoryID, search (name ILIKE), minPrice, maxPrice, inStockOnly, attributes map.
+// sortBy: "in_stock" (default), "newest", "price_asc", "price_desc".
+func (s *Store) ListProducts(
+	categoryID, search string,
+	minPrice, maxPrice float64,
+	inStockOnly bool,
+	attributes map[string]string,
+	sortBy string,
+	page, limit int,
+) ([]map[string]interface{}, int, error) {
 	offset := (page - 1) * limit
 
-	// Build dynamic WHERE
 	where := "WHERE p.is_active = true AND p.is_web_visible = true"
 	args := []interface{}{}
 	idx := 1
@@ -33,17 +42,76 @@ func (s *Store) ListProducts(categoryID string, search string, page, limit int) 
 		args = append(args, "%"+search+"%")
 		idx++
 	}
+	if minPrice > 0 {
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM variants v WHERE v.product_id = p.id AND v.is_active = true AND v.price >= $%d
+		)`, idx)
+		args = append(args, minPrice)
+		idx++
+	}
+	if maxPrice > 0 {
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM variants v WHERE v.product_id = p.id AND v.is_active = true AND v.price <= $%d
+		)`, idx)
+		args = append(args, maxPrice)
+		idx++
+	}
+	if inStockOnly {
+		where += ` AND EXISTS (
+			SELECT 1 FROM variants v
+			JOIN stocks st ON st.variant_id = v.id
+			JOIN warehouses w ON w.id = st.warehouse_id
+			WHERE v.product_id = p.id AND v.is_active = true
+			  AND w.type = 'CENTRAL' AND st.quantity > 0
+		)`
+	}
+	// One correlated sub-select per attribute key/value pair
+	for attrName, attrVal := range attributes {
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM variants v2
+			JOIN variant_attribute_mapping vam ON vam.variant_id = v2.id
+			JOIN attribute_values av ON av.id = vam.attribute_value_id
+			JOIN attributes a ON a.id = av.attribute_id
+			WHERE v2.product_id = p.id AND v2.is_active = true
+			  AND LOWER(a.name) = LOWER($%d) AND LOWER(av.value) = LOWER($%d)
+		)`, idx, idx+1)
+		args = append(args, attrName, attrVal)
+		idx += 2
+	}
 
-	// Count
+	// Count (same WHERE, no ORDER/LIMIT)
 	var total int
 	countArgs := make([]interface{}, len(args))
 	copy(countArgs, args)
-	err := s.db.QueryRow("SELECT COUNT(*) FROM products p "+where, countArgs...).Scan(&total)
-	if err != nil {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM products p "+where, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	// Fetch products
+	// Order by
+	var orderClause string
+	switch sortBy {
+	case "newest":
+		orderClause = "ORDER BY p.created_at DESC"
+	case "price_asc":
+		orderClause = `ORDER BY
+			(SELECT MIN(v.price) FROM variants v WHERE v.product_id = p.id AND v.is_active = true)
+			ASC NULLS LAST`
+	case "price_desc":
+		orderClause = `ORDER BY
+			(SELECT MAX(v.price) FROM variants v WHERE v.product_id = p.id AND v.is_active = true)
+			DESC NULLS LAST`
+	default: // "in_stock" — in-stock items bubble to top, then newest
+		orderClause = `ORDER BY
+			(EXISTS (
+				SELECT 1 FROM variants v
+				JOIN stocks st ON st.variant_id = v.id
+				JOIN warehouses w ON w.id = st.warehouse_id
+				WHERE v.product_id = p.id AND v.is_active = true
+				  AND w.type = 'CENTRAL' AND st.quantity > 0
+			)) DESC,
+			p.created_at DESC`
+	}
+
 	query := `
 		SELECT p.id, p.name, COALESCE(p.description, ''), COALESCE(p.brand, ''),
 		       COALESCE(p.main_image_url, ''), COALESCE(c.name, '') AS category,
@@ -53,7 +121,7 @@ func (s *Store) ListProducts(categoryID string, search string, page, limit int) 
 		FROM products p
 		LEFT JOIN categories c ON c.id = p.category_id
 		` + where + `
-		ORDER BY p.created_at DESC
+		` + orderClause + `
 		LIMIT $` + strconv.Itoa(idx) + ` OFFSET $` + strconv.Itoa(idx+1)
 
 	args = append(args, limit, offset)
@@ -67,9 +135,9 @@ func (s *Store) ListProducts(categoryID string, search string, page, limit int) 
 	var products []map[string]interface{}
 	for rows.Next() {
 		var id, name, desc, brand, image, category, uom string
-		var minPrice, maxPrice sql.NullFloat64
+		var minP, maxP sql.NullFloat64
 
-		if err := rows.Scan(&id, &name, &desc, &brand, &image, &category, &uom, &minPrice, &maxPrice); err != nil {
+		if err := rows.Scan(&id, &name, &desc, &brand, &image, &category, &uom, &minP, &maxP); err != nil {
 			return nil, 0, err
 		}
 
@@ -82,25 +150,21 @@ func (s *Store) ListProducts(categoryID string, search string, page, limit int) 
 			"category":    category,
 			"uom":         uom,
 		}
-		if minPrice.Valid {
-			p["min_price"] = minPrice.Float64
+		if minP.Valid {
+			p["min_price"] = minP.Float64
 		}
-		if maxPrice.Valid {
-			p["max_price"] = maxPrice.Float64
+		if maxP.Valid {
+			p["max_price"] = maxP.Float64
 		}
-
 		products = append(products, p)
 	}
 
-	totalPages := int(math.Ceil(float64(total) / float64(limit)))
-	_ = totalPages
-
+	_ = int(math.Ceil(float64(total) / float64(limit)))
 	return products, total, nil
 }
 
-// GetProductDetail returns a product with its variants, images, and stock info.
+// GetProductDetail returns a product with its variants (CENTRAL warehouse stock), images, and attributes.
 func (s *Store) GetProductDetail(productID string) (map[string]interface{}, error) {
-	// Product base
 	var id, name, desc, brand, image, category, uom string
 	var fabricComp, pattern, occasion, care sql.NullString
 
@@ -131,10 +195,8 @@ func (s *Store) GetProductDetail(productID string) (map[string]interface{}, erro
 		"care_instructions":  nullStr(care),
 	}
 
-	// Product images
-	imgRows, err := s.db.Query(`
-		SELECT image_url FROM product_images WHERE product_id = $1
-	`, productID)
+	// Product gallery images
+	imgRows, err := s.db.Query(`SELECT image_url FROM product_images WHERE product_id = $1`, productID)
 	if err == nil {
 		defer imgRows.Close()
 		var images []string
@@ -146,12 +208,13 @@ func (s *Store) GetProductDetail(productID string) (map[string]interface{}, erro
 		product["images"] = images
 	}
 
-	// Variants with stock
+	// Variants — CENTRAL warehouse is the source of truth for ecom stock
 	varRows, err := s.db.Query(`
 		SELECT v.id, v.variant_code, v.name, v.sku, v.price, COALESCE(v.barcode, ''),
-		       COALESCE(SUM(st.quantity), 0) AS total_stock
+		       COALESCE(SUM(CASE WHEN w.type = 'CENTRAL' THEN st.quantity ELSE 0 END), 0) AS central_stock
 		FROM variants v
 		LEFT JOIN stocks st ON st.variant_id = v.id
+		LEFT JOIN warehouses w ON w.id = st.warehouse_id
 		WHERE v.product_id = $1 AND v.is_active = true
 		GROUP BY v.id, v.variant_code, v.name, v.sku, v.price, v.barcode
 		ORDER BY v.variant_code
@@ -178,6 +241,7 @@ func (s *Store) GetProductDetail(productID string) (map[string]interface{}, erro
 			"sku":          sku,
 			"price":        price,
 			"barcode":      barcode,
+			"stock":        stock,
 			"in_stock":     stock > 0,
 		}
 
@@ -196,7 +260,7 @@ func (s *Store) GetProductDetail(productID string) (map[string]interface{}, erro
 			}
 		}
 
-		// Variant attributes
+		// Variant attributes (e.g. {"Color":"Red","Size":"M"})
 		attrRows, err := s.db.Query(`
 			SELECT a.name, av.value
 			FROM variant_attribute_mapping vam
@@ -224,10 +288,16 @@ func (s *Store) GetProductDetail(productID string) (map[string]interface{}, erro
 	return product, nil
 }
 
-// ListCategories returns active categories.
+// ListCategories returns active categories with live web-visible product counts.
 func (s *Store) ListCategories() ([]map[string]interface{}, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, products_count FROM categories WHERE is_active = true ORDER BY name
+		SELECT c.id, c.name, COUNT(DISTINCT p.id) AS products_count
+		FROM categories c
+		LEFT JOIN products p ON p.category_id = c.id
+		  AND p.is_active = true AND p.is_web_visible = true
+		WHERE c.is_active = true
+		GROUP BY c.id, c.name
+		ORDER BY c.name
 	`)
 	if err != nil {
 		return nil, err
@@ -246,6 +316,38 @@ func (s *Store) ListCategories() ([]map[string]interface{}, error) {
 		})
 	}
 	return cats, nil
+}
+
+// SearchSuggestions returns up to 8 product name / brand matches for autocomplete.
+func (s *Store) SearchSuggestions(q string) ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT suggestion FROM (
+			(SELECT DISTINCT p.name AS suggestion
+			 FROM products p
+			 WHERE p.is_active = true AND p.is_web_visible = true AND p.name ILIKE $1
+			 LIMIT 8)
+			UNION
+			(SELECT DISTINCT p.brand AS suggestion
+			 FROM products p
+			 WHERE p.is_active = true AND p.is_web_visible = true
+			   AND p.brand IS NOT NULL AND p.brand ILIKE $1
+			 LIMIT 8)
+		) sub
+		ORDER BY suggestion
+		LIMIT 8
+	`, "%"+q+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var suggestions []string
+	for rows.Next() {
+		var sg string
+		rows.Scan(&sg)
+		suggestions = append(suggestions, sg)
+	}
+	return suggestions, nil
 }
 
 func nullStr(ns sql.NullString) string {

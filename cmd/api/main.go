@@ -188,7 +188,7 @@ func main() {
 	ecomCartStore := ecomCart.NewStore(database)
 	ecomCartHandler := ecomCart.NewHandler(ecomCartStore)
 
-	ecomOrderStore := ecomOrder.NewStore(database)
+	ecomOrderStore := ecomOrder.NewStore(database, redisClient)
 	ecomOrderHandler := ecomOrder.NewHandler(ecomOrderStore)
 
 	migrationStore := migration.NewStore(database)

@@ -29,17 +29,36 @@ func (s *Store) getOrCreateCart(customerID string) (string, error) {
 }
 
 // AddItem adds a variant to the cart or increments its quantity.
+// Validates that the variant exists, is active, and has stock in the CENTRAL warehouse.
 func (s *Store) AddItem(customerID, variantID string, quantity int) error {
 	cartID, err := s.getOrCreateCart(customerID)
 	if err != nil {
 		return err
 	}
 
-	// Verify variant exists and is active
+	// Verify variant exists, is active, and belongs to a web-visible product
 	var exists bool
-	err = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM variants WHERE id = $1 AND is_active = true)`, variantID).Scan(&exists)
+	err = s.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM variants v
+			JOIN products p ON p.id = v.product_id
+			WHERE v.id = $1 AND v.is_active = true
+			  AND p.is_active = true AND p.is_web_visible = true
+		)`, variantID).Scan(&exists)
 	if err != nil || !exists {
 		return fmt.Errorf("variant not found or inactive")
+	}
+
+	// Verify sufficient CENTRAL warehouse stock
+	var centralStock float64
+	s.db.QueryRow(`
+		SELECT COALESCE(SUM(st.quantity), 0)
+		FROM stocks st
+		JOIN warehouses w ON w.id = st.warehouse_id
+		WHERE st.variant_id = $1 AND w.type = 'CENTRAL'
+	`, variantID).Scan(&centralStock)
+	if centralStock < float64(quantity) {
+		return fmt.Errorf("insufficient stock")
 	}
 
 	_, err = s.db.Exec(`
@@ -56,7 +75,21 @@ func (s *Store) AddItem(customerID, variantID string, quantity int) error {
 }
 
 // UpdateItemQty sets the quantity for a specific cart item.
+// Validates CENTRAL warehouse stock before updating.
 func (s *Store) UpdateItemQty(customerID, itemID string, quantity int) error {
+	// Check CENTRAL stock before allowing the quantity change
+	var centralStock float64
+	s.db.QueryRow(`
+		SELECT COALESCE(SUM(st.quantity), 0)
+		FROM stocks st
+		JOIN warehouses w ON w.id = st.warehouse_id
+		WHERE st.variant_id = (SELECT variant_id FROM ecom_cart_items WHERE id = $1)
+		  AND w.type = 'CENTRAL'
+	`, itemID).Scan(&centralStock)
+	if centralStock < float64(quantity) {
+		return fmt.Errorf("insufficient stock")
+	}
+
 	res, err := s.db.Exec(`
 		UPDATE ecom_cart_items SET quantity = $3
 		WHERE id = $1 AND cart_id = (SELECT id FROM ecom_carts WHERE customer_id = $2)
@@ -69,6 +102,18 @@ func (s *Store) UpdateItemQty(customerID, itemID string, quantity int) error {
 		return fmt.Errorf("cart item not found")
 	}
 	return nil
+}
+
+// GetCartCount returns the total number of item units in the customer's cart (for badge display).
+func (s *Store) GetCartCount(customerID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COALESCE(SUM(ci.quantity), 0)
+		FROM ecom_cart_items ci
+		JOIN ecom_carts c ON c.id = ci.cart_id
+		WHERE c.customer_id = $1
+	`, customerID).Scan(&count)
+	return count, err
 }
 
 // RemoveItem deletes a cart item.
@@ -103,12 +148,13 @@ func (s *Store) GetCart(customerID string) ([]map[string]interface{}, error) {
 		       COALESCE(v.barcode, ''), p.id AS product_id, p.name AS product_name,
 		       COALESCE(p.main_image_url, '') AS product_image,
 		       ci.quantity,
-		       COALESCE(SUM(st.quantity), 0) AS available_stock
+		       COALESCE(SUM(CASE WHEN w.type = 'CENTRAL' THEN st.quantity ELSE 0 END), 0) AS available_stock
 		FROM ecom_cart_items ci
 		JOIN ecom_carts c ON c.id = ci.cart_id
 		JOIN variants v ON v.id = ci.variant_id
 		JOIN products p ON p.id = v.product_id
 		LEFT JOIN stocks st ON st.variant_id = v.id
+		LEFT JOIN warehouses w ON w.id = st.warehouse_id
 		WHERE c.customer_id = $1
 		GROUP BY ci.id, ci.variant_id, v.variant_code, v.name, v.sku, v.price, v.barcode,
 		         p.id, p.name, p.main_image_url, ci.quantity
