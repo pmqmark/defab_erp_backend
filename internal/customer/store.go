@@ -34,7 +34,10 @@ func (s *Store) List(limit, offset int, search string) ([]map[string]interface{}
 	// List
 	query := fmt.Sprintf(`
 		SELECT
-			c.id, c.customer_code, c.name, c.phone, c.email,
+			c.id, c.customer_code, c.name,
+			COALESCE(c.phone, '') AS phone,
+			COALESCE(c.email, '') AS email,
+			COALESCE(c.gst_number, '') AS gst_number,
 			c.total_purchases, c.is_active, c.created_at, c.updated_at,
 			COUNT(DISTINCT so.id) AS order_count
 		FROM customers c
@@ -55,13 +58,13 @@ func (s *Store) List(limit, offset int, search string) ([]map[string]interface{}
 
 	var out []map[string]interface{}
 	for rows.Next() {
-		var id, code, name, phone, email string
+		var id, code, name, phone, email, gstNumber string
 		var totalPurchases float64
 		var isActive bool
 		var createdAt, updatedAt interface{}
 		var orderCount int
 
-		if err := rows.Scan(&id, &code, &name, &phone, &email, &totalPurchases, &isActive, &createdAt, &updatedAt, &orderCount); err != nil {
+		if err := rows.Scan(&id, &code, &name, &phone, &email, &gstNumber, &totalPurchases, &isActive, &createdAt, &updatedAt, &orderCount); err != nil {
 			return nil, 0, err
 		}
 
@@ -71,6 +74,7 @@ func (s *Store) List(limit, offset int, search string) ([]map[string]interface{}
 			"name":            name,
 			"phone":           phone,
 			"email":           email,
+			"gst_number":      gstNumber,
 			"total_purchases": totalPurchases,
 			"is_active":       isActive,
 			"created_at":      createdAt,
@@ -84,16 +88,17 @@ func (s *Store) List(limit, offset int, search string) ([]map[string]interface{}
 
 func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 	// Customer details
-	var custID, code, name, phone, email string
+	var custID, code, name, phone, email, gstNumber string
 	var totalPurchases float64
 	var isActive bool
 	var createdAt, updatedAt interface{}
 
 	err := s.db.QueryRow(`
-		SELECT id, customer_code, name, phone, email,
-		       total_purchases, is_active, created_at, updated_at
+		SELECT id, customer_code, name,
+		       COALESCE(phone, ''), COALESCE(email, ''),
+		       COALESCE(gst_number, ''), total_purchases, is_active, created_at, updated_at
 		FROM customers WHERE id = $1
-	`, id).Scan(&custID, &code, &name, &phone, &email, &totalPurchases, &isActive, &createdAt, &updatedAt)
+	`, id).Scan(&custID, &code, &name, &phone, &email, &gstNumber, &totalPurchases, &isActive, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +109,7 @@ func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 		"name":            name,
 		"phone":           phone,
 		"email":           email,
+		"gst_number":      gstNumber,
 		"total_purchases": totalPurchases,
 		"is_active":       isActive,
 		"created_at":      createdAt,
