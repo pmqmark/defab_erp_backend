@@ -67,8 +67,8 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && strings.Contains(pgErr.ConstraintName, "invoice_number") {
 			return httperr.Conflict(c, "Invoice number already exists")
 		}
-		log.Println("direct grn create error:", err)
-		return httperr.Internal(c)
+		log.Printf("direct grn create error: %+v", err)
+		return c.Status(500).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	// Trigger accounting auto-record (non-blocking)
@@ -85,8 +85,22 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 
 // List handles GET /direct-grn?grn_number=&supplier_name=&date_from=&date_to=
 func (h *Handler) List(c *fiber.Ctx) error {
-	page, _ := strconv.Atoi(c.Query("page", "1"))
-	limit, _ := strconv.Atoi(c.Query("limit", "20"))
+	pageStr := c.Query("page")
+	limitStr := c.Query("limit")
+
+	page := 0
+	limit := 0
+	if pageStr != "" || limitStr != "" {
+		page, _ = strconv.Atoi(pageStr)
+		limit, _ = strconv.Atoi(limitStr)
+		if page < 1 {
+			page = 1
+		}
+		if limit < 1 || limit > 100 {
+			limit = 20
+		}
+	}
+
 	f := ListFilter{
 		GRNNumber:    c.Query("grn_number"),
 		SupplierName: c.Query("supplier_name"),
@@ -115,4 +129,15 @@ func (h *Handler) GetByID(c *fiber.Ctx) error {
 		return httperr.Internal(c)
 	}
 	return c.JSON(detail)
+}
+
+// GetNextVariantCode handles GET /direct-grn/next-variant-code.
+// Returns the next safe variant_code to use (MAX(variant_code)+1).
+func (h *Handler) GetNextVariantCode(c *fiber.Ctx) error {
+	next, err := h.store.NextVariantCode()
+	if err != nil {
+		log.Println("next variant code error:", err)
+		return httperr.Internal(c)
+	}
+	return c.JSON(fiber.Map{"next_variant_code": next})
 }

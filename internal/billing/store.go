@@ -120,9 +120,8 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 		}
 		lineTotal := item.Quantity * item.UnitPrice
 
-		// Auto-resolve TaxPercent based on item type:
-		// PRODUCT: threshold on unit price (per-item cost)
-		// MATERIAL: threshold on line total (quantity × unit price)
+		// Auto-resolve TaxPercent based on item type.
+		// Slab threshold is on the MRP (inclusive) price: > 2500 → 18%, else 5%.
 		if item.ItemType == "MATERIAL" {
 			if lineTotal > 2500 {
 				in.Items[i].TaxPercent = 18
@@ -165,7 +164,8 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 		taxableAmount = 0
 	}
 
-	// Proportionally distribute tax across items based on taxable amount
+	// Extract GST from each item's MRP-inclusive net amount.
+	// Prices are already MRP (inclusive of GST), so tax is extracted, not added.
 	for _, item := range in.Items {
 		lineTotal := item.Quantity * item.UnitPrice
 		// Proportional share of bill discount for this item
@@ -174,16 +174,18 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 			itemBillDiscount = billDiscount * lineTotal / subtotal
 		}
 		itemBillDiscount = round2(itemBillDiscount)
-		lineTaxable := lineTotal - item.Discount - itemBillDiscount
-		if lineTaxable < 0 {
-			lineTaxable = 0
+		lineTaxableIncl := lineTotal - item.Discount - itemBillDiscount
+		if lineTaxableIncl < 0 {
+			lineTaxableIncl = 0
 		}
-		lineTax := lineTaxable * item.TaxPercent / 100
+		// Extract: tax = inclusive × rate / (100 + rate)
+		lineTax := lineTaxableIncl * item.TaxPercent / (100 + item.TaxPercent)
 		lineTax = round2(lineTax)
 		taxTotal += lineTax
 	}
 
-	grandTotal = taxableAmount + taxTotal
+	// Grand total = net MRP after all discounts (tax is already inside the MRP)
+	grandTotal = taxableAmount
 	grandTotal = round2(grandTotal)
 	subtotal = round2(subtotal)
 	discountTotal = round2(discountTotal)
@@ -194,6 +196,13 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	for _, p := range in.Payments {
 		totalPaid += round2(p.Amount)
 	}
+
+	// Round grand_total to whole rupee before recording anywhere; track the adjustment in round_off
+	exactNet := round2(grandTotal)
+	roundedNet := math.Round(exactNet)
+	roundOff := round2(roundedNet - exactNet)
+	grandTotal = roundedNet
+
 	paymentStatus := "UNPAID"
 	if totalPaid >= grandTotal {
 		paymentStatus = "PAID"
@@ -249,12 +258,14 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 			itemBillDisc = billDiscount * lineTotal / subtotal
 		}
 		itemBillDisc = round2(itemBillDisc)
-		taxAmt := (lineTotal - item.Discount - itemBillDisc) * item.TaxPercent / 100
-		if lineTotal-item.Discount-itemBillDisc < 0 {
-			taxAmt = 0
+		lineTaxableIncl := lineTotal - item.Discount - itemBillDisc
+		if lineTaxableIncl < 0 {
+			lineTaxableIncl = 0
 		}
-		taxAmt = round2(taxAmt)
-		total := round2(lineTotal - item.Discount + taxAmt)
+		// Extract GST from MRP-inclusive net amount
+		taxAmt := round2(lineTaxableIncl * item.TaxPercent / (100 + item.TaxPercent))
+		// total_price = line net at MRP (tax already inside, not added again)
+		total := round2(lineTotal - item.Discount)
 
 		ic := itemCalc{
 			variantID:  item.VariantID,
@@ -296,13 +307,7 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	invoiceNumber := fmt.Sprintf("INV%05d", invNext)
 
 	gstAmount := taxTotal
-	netAmount := grandTotal
-
-	// Round net_amount to whole number; store the adjustment in round_off
-	exactNet := round2(netAmount)
-	roundedNet := math.Round(exactNet)
-	roundOff := round2(roundedNet - exactNet)
-	netAmount = roundedNet
+	netAmount := grandTotal // already rounded to whole rupee
 
 	invoiceStatus := paymentStatus
 	if invoiceStatus == "PAID" {
@@ -423,10 +428,19 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 	// Build rich response for receipt/print
 	// ──────────────────────────────────────────
 
-	// Fetch branch name
-	var branchName string
+	// Fetch branch details
+	var branchName, branchAddress, branchCity, branchState, branchPhone, branchCode string
 	if branchID != "" {
-		s.db.QueryRow(`SELECT name FROM branches WHERE id = $1`, branchID).Scan(&branchName)
+		s.db.QueryRow(`
+			SELECT
+				COALESCE(name, ''),
+				COALESCE(address, ''),
+				COALESCE(city, ''),
+				COALESCE(state, ''),
+				COALESCE(phone_number, ''),
+				COALESCE(branch_code, '')
+			FROM branches WHERE id = $1`, branchID).
+			Scan(&branchName, &branchAddress, &branchCity, &branchState, &branchPhone, &branchCode)
 	}
 
 	// Fetch warehouse name
@@ -498,6 +512,11 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 		// Context
 		"channel":          channel,
 		"branch_name":      branchName,
+		"branch_code":      branchCode,
+		"branch_address":   branchAddress,
+		"branch_city":      branchCity,
+		"branch_state":     branchState,
+		"branch_phone":     branchPhone,
 		"warehouse_name":   warehouseName,
 		"salesperson_name": salespersonName,
 
@@ -511,6 +530,7 @@ func (s *Store) CreateBill(in CreateBillInput, userID, branchID string) (map[str
 		"total_gst":      round2(taxTotal),
 		"tax_total":      round2(taxTotal),
 		"grand_total":    round2(grandTotal),
+		"round_off":      round2(roundOff),
 		"paid_amount":    round2(totalPaid),
 		"balance_due":    round2(grandTotal - totalPaid),
 		"payment_status": paymentStatus,
