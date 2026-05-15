@@ -286,8 +286,9 @@ func (h *Handler) LowStock(c *fiber.Ctx) error {
 		var product, variant, warehouse string
 		var variantCode int
 		var qty decimal.Decimal
+		var hsnCode string
 
-		rows.Scan(&product, &variant, &variantCode, &warehouse, &qty)
+		rows.Scan(&product, &variant, &variantCode, &warehouse, &qty, &hsnCode)
 
 		out = append(out, fiber.Map{
 			"product":      product,
@@ -295,6 +296,7 @@ func (h *Handler) LowStock(c *fiber.Ctx) error {
 			"variant_code": variantCode,
 			"warehouse":    warehouse,
 			"quantity":     qty,
+			"hsn_code":     hsnCode,
 		})
 	}
 
@@ -363,6 +365,7 @@ func (h *Handler) All(c *fiber.Ctx) error {
 			vname, sku  string
 			wid, wname  string
 			qty         decimal.Decimal
+			hsnCode     string
 		)
 
 		if err := rows.Scan(
@@ -371,6 +374,7 @@ func (h *Handler) All(c *fiber.Ctx) error {
 			&vid, &variantCode, &vname, &sku,
 			&wid, &wname,
 			&qty,
+			&hsnCode,
 		); err != nil {
 			return httperr.Internal(c)
 		}
@@ -378,7 +382,7 @@ func (h *Handler) All(c *fiber.Ctx) error {
 		data = append(data, fiber.Map{
 			"id":        stockID,
 			"product":   fiber.Map{"id": pid, "name": pname},
-			"variant":   fiber.Map{"id": vid, "variant_code": variantCode, "name": vname, "sku": sku},
+			"variant":   fiber.Map{"id": vid, "variant_code": variantCode, "name": vname, "sku": sku, "hsn_code": hsnCode},
 			"warehouse": fiber.Map{"id": wid, "name": wname},
 			"quantity":  qty,
 		})
@@ -851,4 +855,45 @@ func (h *Handler) ByWarehouseProductSummary(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(out)
+}
+
+// POST /stocks/quick-add
+// Creates a product (if needed), a variant, and stock in one transaction.
+func (h *Handler) QuickAdd(c *fiber.Ctx) error {
+	var in QuickAddInput
+	if err := c.BodyParser(&in); err != nil {
+		return httperr.BadRequest(c, "invalid request body")
+	}
+
+	if in.VariantCode == 0 {
+		return httperr.BadRequest(c, "variant_code is required")
+	}
+	if in.VariantName == "" {
+		return httperr.BadRequest(c, "variant_name is required")
+	}
+	if in.Price <= 0 {
+		return httperr.BadRequest(c, "price is required")
+	}
+	if in.WarehouseID == "" {
+		return httperr.BadRequest(c, "warehouse_id is required")
+	}
+	if in.Quantity.IsZero() {
+		return httperr.BadRequest(c, "quantity is required")
+	}
+	if in.ProductID == "" && (in.ProductName == "" || in.CategoryID == "") {
+		return httperr.BadRequest(c, "provide product_id or product_name + category_id")
+	}
+
+	result, err := h.store.QuickAdd(in)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(201).JSON(fiber.Map{
+		"message":      "product, variant and stock created",
+		"product_id":   result.ProductID,
+		"variant_id":   result.VariantID,
+		"variant_code": result.VariantCode,
+		"stock_id":     result.StockID,
+	})
 }

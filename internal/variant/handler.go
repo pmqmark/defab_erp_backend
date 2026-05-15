@@ -27,14 +27,26 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	price, _ := strconv.ParseFloat(priceStr, 64)
 	costPrice, _ := strconv.ParseFloat(costPriceStr, 64)
 
+	var variantCodeInput *int
+	if vcStr := c.FormValue("variant_code"); vcStr != "" {
+		vc, err := strconv.Atoi(vcStr)
+		if err == nil {
+			variantCodeInput = &vc
+		}
+	}
+
+	hsnCode := c.FormValue("hsn_code")
+
 	form, _ := c.MultipartForm()
 	if form == nil {
 		// no multipart form — continue with empty collections
 		in := CreateVariantInput{
-			ProductID: productID,
-			Name:      name,
-			Price:     price,
-			CostPrice: costPrice,
+			ProductID:   productID,
+			Name:        name,
+			Price:       price,
+			CostPrice:   costPrice,
+			VariantCode: variantCodeInput,
+			HSNCode:     hsnCode,
 		}
 		id, sku, variantCode, err := h.store.Create(in)
 		if err != nil {
@@ -91,6 +103,8 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 		Name:              name,
 		Price:             price,
 		CostPrice:         costPrice,
+		VariantCode:       variantCodeInput,
+		HSNCode:           hsnCode,
 		AttributeValueIDs: cleanAttrIDs,
 		ImagePaths:        imagePaths,
 	}
@@ -146,12 +160,12 @@ func (h *Handler) ListByProduct(c *fiber.Ctx) error {
 	var out []fiber.Map
 
 	for rows.Next() {
-		var id, name, sku string
+		var id, name, sku, hsnCode string
 		var variantCode int
 		var price, cost float64
 		var active bool
 
-		rows.Scan(&id, &variantCode, &name, &sku, &price, &cost, &active)
+		rows.Scan(&id, &variantCode, &name, &sku, &price, &cost, &active, &hsnCode)
 
 		out = append(out, fiber.Map{
 			"id":           id,
@@ -161,6 +175,7 @@ func (h *Handler) ListByProduct(c *fiber.Ctx) error {
 			"price":        price,
 			"cost_price":   cost,
 			"is_active":    active,
+			"hsn_code":     hsnCode,
 		})
 	}
 
@@ -171,11 +186,11 @@ func (h *Handler) GetByID(c *fiber.Ctx) error {
 	id := c.Params("id")
 
 	row, _ := h.store.Get(id)
-	var variantID, productID, name, sku, barcode string
+	var variantID, productID, name, sku, barcode, hsnCode string
 	var variantCode int
 	var price, costPrice float64
 	var isActive bool
-	if err := row.Scan(&variantID, &productID, &variantCode, &name, &sku, &barcode, &price, &costPrice, &isActive); err != nil {
+	if err := row.Scan(&variantID, &productID, &variantCode, &name, &sku, &barcode, &price, &costPrice, &isActive, &hsnCode); err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "variant not found"})
 	}
 
@@ -208,6 +223,7 @@ func (h *Handler) GetByID(c *fiber.Ctx) error {
 		"price":        price,
 		"cost_price":   costPrice,
 		"is_active":    isActive,
+		"hsn_code":     hsnCode,
 		"images":       images,
 		"attributes":   attributes,
 	})
@@ -257,6 +273,13 @@ func (h *Handler) Update(c *fiber.Ctx) error {
 			}
 		}
 		fmt.Println("Update: attribute_value_ids =", in.AttributeValueIDs)
+
+		if v := c.FormValue("variant_code"); v != "" {
+			vc, err := strconv.Atoi(v)
+			if err == nil {
+				in.VariantCode = &vc
+			}
+		}
 
 		// Handle new image uploads
 		files := form.File["images"]

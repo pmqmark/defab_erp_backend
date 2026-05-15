@@ -61,19 +61,38 @@ func (s *Store) Create(in CreateVariantInput) (string, string, int, error) {
 	var id string
 	var variantCode int
 
-	err = tx.QueryRow(`
-	INSERT INTO variants
-	(product_id,name,sku,price,cost_price,barcode)
-	VALUES ($1,$2,$3,$4,$5,$6)
-	RETURNING id, variant_code
-	`,
-		in.ProductID,
-		in.Name,
-		sku,
-		in.Price,
-		in.CostPrice,
-		sku,
-	).Scan(&id, &variantCode)
+	if in.VariantCode != nil {
+		err = tx.QueryRow(`
+		INSERT INTO variants
+		(product_id,name,sku,price,cost_price,barcode,variant_code,hsn_code)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id, variant_code
+		`,
+			in.ProductID,
+			in.Name,
+			sku,
+			in.Price,
+			in.CostPrice,
+			sku,
+			*in.VariantCode,
+			in.HSNCode,
+		).Scan(&id, &variantCode)
+	} else {
+		err = tx.QueryRow(`
+		INSERT INTO variants
+		(product_id,name,sku,price,cost_price,barcode,hsn_code)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id, variant_code
+		`,
+			in.ProductID,
+			in.Name,
+			sku,
+			in.Price,
+			in.CostPrice,
+			sku,
+			in.HSNCode,
+		).Scan(&id, &variantCode)
+	}
 
 	if err != nil {
 		return "", "", 0, err
@@ -123,7 +142,7 @@ func first3(s string) string {
 
 func (s *Store) ListByProduct(pid string) (*sql.Rows, error) {
 	return s.db.Query(`
-	SELECT id,variant_code,name,sku,price,cost_price,is_active
+	SELECT id,variant_code,name,sku,price,cost_price,is_active,COALESCE(hsn_code,'')
 	FROM variants
 	WHERE product_id=$1
 	ORDER BY variant_code
@@ -136,7 +155,7 @@ func (s *Store) ListByProduct(pid string) (*sql.Rows, error) {
 
 func (s *Store) Get(id string) (*sql.Row, error) {
 	return s.db.QueryRow(`
-	SELECT id,product_id,variant_code,name,sku,COALESCE(barcode,''),price,cost_price,is_active
+	SELECT id,product_id,variant_code,name,sku,COALESCE(barcode,''),price,cost_price,is_active,COALESCE(hsn_code,'')
 	FROM variants WHERE id=$1
 	`, id), nil
 }
@@ -185,12 +204,14 @@ func (s *Store) Update(id string, in UpdateVariantInput) error {
 	UPDATE variants SET
 	name = COALESCE($1,name),
 	price = COALESCE($2,price),
-	cost_price = COALESCE($3,cost_price)
-	WHERE id=$4
+	cost_price = COALESCE($3,cost_price),
+	variant_code = COALESCE($4,variant_code)
+	WHERE id=$5
 	`,
 		in.Name,
 		in.Price,
 		in.CostPrice,
+		in.VariantCode,
 		id,
 	)
 	if err != nil {
