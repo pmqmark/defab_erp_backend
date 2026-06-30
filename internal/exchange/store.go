@@ -552,6 +552,12 @@ func (s *Store) Create(in CreateExchangeInput, userID, branchID string) (string,
 	}
 	soNumber := fmt.Sprintf("SO%05d", soNext)
 
+	// Use provided salesperson if given, otherwise inherit from original invoice
+	salespersonID := inv.SalespersonID
+	if in.SalespersonID != nil {
+		salespersonID = sql.NullString{String: *in.SalespersonID, Valid: true}
+	}
+
 	var newSalesOrderID string
 	if err := tx.QueryRow(fmt.Sprintf(`
 		INSERT INTO sales_orders
@@ -565,7 +571,7 @@ func (s *Store) Create(in CreateExchangeInput, userID, branchID string) (string,
 		RETURNING id
 	`, txDate), soNumber, inv.BranchID, inv.CustomerID, inv.WarehouseID, userID,
 		subAmtIn, gstAmtIn, discAmtIn, totalInAmount,
-		"Exchange "+exchangeNumber, inv.SalespersonID).Scan(&newSalesOrderID); err != nil {
+		"Exchange "+exchangeNumber, salespersonID).Scan(&newSalesOrderID); err != nil {
 		return "", fmt.Errorf("create exchange sales order: %w", err)
 	}
 
@@ -865,13 +871,17 @@ func (s *Store) List(f ExchangeListFilter) ([]map[string]interface{}, int, error
 			COALESCE(rn.return_number, '')   AS credit_note_number,
 			COALESCE(si.invoice_number, '')  AS new_invoice_number,
 			eo.original_sales_invoice_id,
-			COALESCE(orig.invoice_number, '') AS original_invoice_number
+			COALESCE(orig.invoice_number, '') AS original_invoice_number,
+			COALESCE(nso.salesperson_id::text, '') AS salesperson_id,
+			COALESCE(sp.name, '') AS salesperson_name
 		FROM exchange_orders eo
 		LEFT JOIN customers c ON c.id = eo.customer_id
 		LEFT JOIN branches b ON b.id = eo.branch_id
 		LEFT JOIN return_orders rn ON rn.id = eo.credit_note_id
 		LEFT JOIN sales_invoices si ON si.id = eo.new_sales_invoice_id
 		LEFT JOIN sales_invoices orig ON orig.id = eo.original_sales_invoice_id
+		LEFT JOIN sales_orders nso ON nso.id = si.sales_order_id
+		LEFT JOIN sales_persons sp ON sp.id = nso.salesperson_id
 		%s
 		ORDER BY eo.created_at DESC`, where)
 
@@ -896,6 +906,7 @@ func (s *Store) List(f ExchangeListFilter) ([]map[string]interface{}, int, error
 			custName, custPhone, branchName string
 			cnNum, newInvNum                string
 			origInvID, origInvNum           string
+			salespersonID, salespersonName  string
 		)
 		if err := rows.Scan(
 			&id, &num, &status,
@@ -904,6 +915,7 @@ func (s *Store) List(f ExchangeListFilter) ([]map[string]interface{}, int, error
 			&custName, &custPhone, &branchName,
 			&cnNum, &newInvNum,
 			&origInvID, &origInvNum,
+			&salespersonID, &salespersonName,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -923,6 +935,8 @@ func (s *Store) List(f ExchangeListFilter) ([]map[string]interface{}, int, error
 			"new_invoice_number":      newInvNum,
 			"original_invoice_id":     origInvID,
 			"original_invoice_number": origInvNum,
+			"salesperson_id":          salespersonID,
+			"salesperson_name":        salespersonName,
 		})
 	}
 	return result, total, nil
@@ -1069,6 +1083,18 @@ func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 		})
 	}
 
+	// Salesperson from new sales order
+	var salespersonID, salespersonName sql.NullString
+	if exc.NewInvID.Valid {
+		s.db.QueryRow(`
+			SELECT so.salesperson_id, COALESCE(sp.name, '')
+			FROM sales_invoices si
+			JOIN sales_orders so ON so.id = si.sales_order_id
+			LEFT JOIN sales_persons sp ON sp.id = so.salesperson_id
+			WHERE si.id = $1
+		`, exc.NewInvID.String).Scan(&salespersonID, &salespersonName)
+	}
+
 	return map[string]interface{}{
 		"id":                      exc.ID,
 		"exchange_number":         exc.ExchangeNumber,
@@ -1095,6 +1121,8 @@ func (s *Store) GetByID(id string) (map[string]interface{}, error) {
 		"created_by":              exc.CreatedBy,
 		"created_at":              exc.CreatedAt,
 		"completed_at":            exc.CompletedAt,
+		"salesperson_id":          salespersonID.String,
+		"salesperson_name":        salespersonName.String,
 		"items_out":               itemsOut,
 		"items_in":                itemsIn,
 		"settlements":             settlements,
