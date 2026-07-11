@@ -35,6 +35,11 @@ type CreateJobOrderItemInput struct {
 	SubCategory string       `json:"sub_category"` // e.g. "NORMAL with L", "PRINCESS CUT without L" (optional)
 	Pieces      []PieceEntry `json:"pieces"`       // one per component; single-piece → one entry, piece_type=""
 
+	// Staff assignments (free text)
+	DesignerName string `json:"designer_name"`
+	CutterName   string `json:"cutter_name"`
+	StitcherName string `json:"stitcher_name"`
+
 	// Pricing — fully decided by client/frontend
 	Quantity   float64 `json:"quantity"`
 	UnitPrice  float64 `json:"unit_price"`
@@ -57,6 +62,7 @@ type CreateJobOrderInput struct {
 	CustomerPhone         string                        `json:"customer_phone"`
 	CustomerName          string                        `json:"customer_name"`
 	CustomerEmail         string                        `json:"customer_email"`
+	BranchID              string                        `json:"branch_id"`
 	JobType               string                        `json:"job_type"`
 	MaterialSource        string                        `json:"material_source"` // CUSTOMER or STORE
 	ReceivedDate          string                        `json:"received_date"`   // YYYY-MM-DD, optional; defaults to today
@@ -81,6 +87,7 @@ type UpdateJobOrderInput struct {
 	CustomerPhone         string                        `json:"customer_phone"`
 	CustomerName          string                        `json:"customer_name"`
 	CustomerEmail         string                        `json:"customer_email"`
+	BranchID              *string                       `json:"branch_id"`
 	JobType               *string                       `json:"job_type"`
 	MaterialSource        *string                       `json:"material_source"`
 	ExpectedDeliveryDate  *string                       `json:"expected_delivery_date"`
@@ -96,6 +103,12 @@ type UpdateJobOrderInput struct {
 	NetAmount             *float64                      `json:"net_amount"`
 	Items                 []CreateJobOrderItemInput     `json:"items"`
 	Materials             []CreateJobOrderMaterialInput `json:"materials"`
+}
+
+type UpdateItemStaffInput struct {
+	DesignerName *string `json:"designer_name"`
+	CutterName   *string `json:"cutter_name"`
+	StitcherName *string `json:"stitcher_name"`
 }
 
 type StatusUpdateInput struct {

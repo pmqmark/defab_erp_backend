@@ -73,8 +73,9 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	}
 
 	user := c.Locals("user").(*model.User)
-	branchID := ""
-	if user.BranchID != nil {
+	// Use branch_id from request body if provided; fall back to user's assigned branch
+	branchID := in.BranchID
+	if branchID == "" && user.BranchID != nil {
 		branchID = *user.BranchID
 	}
 
@@ -225,4 +226,20 @@ func (h *Handler) Cancel(c *fiber.Ctx) error {
 		return httperr.Internal(c)
 	}
 	return c.JSON(fiber.Map{"message": "cancelled"})
+}
+
+func (h *Handler) UpdateItemStaff(c *fiber.Ctx) error {
+	itemID := c.Params("itemId")
+	var in UpdateItemStaffInput
+	if err := c.BodyParser(&in); err != nil {
+		return httperr.BadRequest(c, "Invalid JSON body")
+	}
+	if in.DesignerName == nil && in.CutterName == nil && in.StitcherName == nil {
+		return httperr.BadRequest(c, "at least one of designer_name, cutter_name, stitcher_name is required")
+	}
+	if err := h.store.UpdateItemStaff(itemID, in); err != nil {
+		log.Println("update item staff error:", err)
+		return httperr.Internal(c)
+	}
+	return c.JSON(fiber.Map{"message": "updated"})
 }
