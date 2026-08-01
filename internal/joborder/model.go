@@ -41,9 +41,23 @@ type JobOrderItem struct {
 	CGST         float64      `json:"cgst"`
 	SGST         float64      `json:"sgst"`
 	TotalPrice   float64      `json:"total_price"`
-	DesignerName string       `json:"designer_name"`
-	CutterName   string       `json:"cutter_name"`
-	StitcherName string       `json:"stitcher_name"`
+	DesignerID   *string      `json:"designer_id"`
+	CutterID     *string      `json:"cutter_id"`
+	StitcherID   *string      `json:"stitcher_id"`
+	HandWorkerID *string      `json:"hand_worker_id"`
+}
+
+type JobOrderItemWorkLog struct {
+	ID              string     `json:"id"`
+	JobOrderItemID  string     `json:"job_order_item_id"`
+	Role            string     `json:"role"`
+	WorkerID        *string    `json:"worker_id"`
+	StartedAt       time.Time  `json:"started_at"`
+	EndedAt         *time.Time `json:"ended_at"`
+	DurationMinutes *float64   `json:"duration_minutes"`
+	Notes           string     `json:"notes"`
+	CreatedBy       string     `json:"created_by"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type JobOrderMaterial struct {
@@ -75,3 +89,18 @@ const (
 	MaterialSourceCustomer = "CUSTOMER"
 	MaterialSourceStore    = "STORE"
 )
+
+const (
+	WorkRoleDesigner   = "DESIGNER"
+	WorkRoleCutter     = "CUTTER"
+	WorkRoleStitcher   = "STITCHER"
+	WorkRoleHandWorker = "HAND_WORKER"
+)
+
+func IsValidWorkRole(role string) bool {
+	switch role {
+	case WorkRoleDesigner, WorkRoleCutter, WorkRoleStitcher, WorkRoleHandWorker:
+		return true
+	}
+	return false
+}
