@@ -82,6 +82,7 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 }
 
 func (h *Handler) InterWarehouse(c *fiber.Ctx) error {
+	user := c.Locals("user").(*model.User)
 	var in InterWarehouseTransferInput
 
 	if err := c.BodyParser(&in); err != nil {
@@ -106,12 +107,24 @@ func (h *Handler) InterWarehouse(c *fiber.Ctx) error {
 		}
 	}
 
-	if err := h.store.CreateInterWarehouseTransfer(in); err != nil {
+	managerBranchID := ""
+	if user.Role.Name == model.RoleStoreManager {
+		if user.BranchID == nil || *user.BranchID == "" {
+			return httperr.BadRequest(c, "Your account is not associated with a branch, so a source warehouse cannot be selected")
+		}
+		managerBranchID = *user.BranchID
+	} else if user.BranchID != nil {
+		managerBranchID = *user.BranchID
+	}
+
+	if err := h.store.CreateInterWarehouseTransfer(in, managerBranchID); err != nil {
 		log.Println("inter-warehouse transfer error:", err)
 
 		switch err.Error() {
 		case "source or destination warehouse not found":
 			return httperr.NotFound(c, err.Error())
+		case "source warehouse is not associated with your branch":
+			return httperr.BadRequest(c, "The selected source warehouse is not associated with your branch")
 		case "source and destination warehouses must belong to different branches":
 			return httperr.BadRequest(c, err.Error())
 		case "insufficient stock":

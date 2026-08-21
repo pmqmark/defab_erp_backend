@@ -90,7 +90,7 @@ func (s *Store) GetBranchVariantStock(branchID, variantCode string) ([]BranchVar
 	return nil, errors.New("warehouse not found for branch")
 }
 
-func (s *Store) CreateInterWarehouseTransfer(in InterWarehouseTransferInput) error {
+func (s *Store) CreateInterWarehouseTransfer(in InterWarehouseTransferInput, managerBranchID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -101,15 +101,18 @@ func (s *Store) CreateInterWarehouseTransfer(in InterWarehouseTransferInput) err
 	err = tx.QueryRow(`
 		SELECT source.branch_id, destination.branch_id
 		FROM warehouses source
-		JOIN warehouses destination ON destination.id = $2
+		LEFT JOIN warehouses destination ON destination.id = $2
 		WHERE source.id = $1
-		FOR UPDATE OF source, destination
+		FOR UPDATE OF source
 	`, in.FromWarehouseID, in.ToWarehouseID).Scan(&fromBranchID, &toBranchID)
 	if err == sql.ErrNoRows || !fromBranchID.Valid || !toBranchID.Valid {
 		return errors.New("source or destination warehouse not found")
 	}
 	if err != nil {
 		return err
+	}
+	if managerBranchID != "" && fromBranchID.String != managerBranchID {
+		return errors.New("source warehouse is not associated with your branch")
 	}
 	if fromBranchID.String == toBranchID.String {
 		return errors.New("source and destination warehouses must belong to different branches")
