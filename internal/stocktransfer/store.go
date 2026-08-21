@@ -24,9 +24,15 @@ func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
-func (s *Store) GetBranchVariantStock(branchID, variantCode string) (*BranchVariantStock, error) {
-	var stock BranchVariantStock
-	err := s.db.QueryRow(`
+func (s *Store) GetBranchVariantStock(branchID, variantCode string) ([]BranchVariantStock, error) {
+	rows, err := s.db.Query(`
+		WITH branch_warehouse AS (
+			SELECT id, name
+			FROM warehouses
+			WHERE branch_id = $2
+			ORDER BY created_at, id
+			LIMIT 1
+		)
 		SELECT
 			v.id,
 			v.variant_code,
@@ -35,41 +41,53 @@ func (s *Store) GetBranchVariantStock(branchID, variantCode string) (*BranchVari
 			w.name,
 			COALESCE(s.quantity, 0)
 		FROM variants v
-		JOIN warehouses w ON w.branch_id = $2
+		CROSS JOIN branch_warehouse w
 		LEFT JOIN stocks s ON s.variant_id = v.id AND s.warehouse_id = w.id
 		WHERE v.variant_code::text = $1
 		  AND v.is_active = true
-		ORDER BY w.created_at, w.id
-		LIMIT 1
-	`, variantCode, branchID).Scan(
-		&stock.VariantID,
-		&stock.VariantCode,
-		&stock.VariantName,
-		&stock.WarehouseID,
-		&stock.Warehouse,
-		&stock.Quantity,
-	)
-	if err == sql.ErrNoRows {
-		var variantExists bool
-		err = s.db.QueryRow(`
-			SELECT EXISTS(
-				SELECT 1 FROM variants
-				WHERE variant_code::text = $1 AND is_active = true
-			)
-		`, variantCode).Scan(&variantExists)
-		if err != nil {
-			return nil, err
-		}
-		if !variantExists {
-			return nil, errors.New("variant not found")
-		}
-		return nil, errors.New("warehouse not found for branch")
-	}
+		ORDER BY v.id
+	`, variantCode, branchID)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
-	return &stock, nil
+	stock := make([]BranchVariantStock, 0)
+	for rows.Next() {
+		var item BranchVariantStock
+		if err := rows.Scan(
+			&item.VariantID,
+			&item.VariantCode,
+			&item.VariantName,
+			&item.WarehouseID,
+			&item.Warehouse,
+			&item.Quantity,
+		); err != nil {
+			return nil, err
+		}
+		stock = append(stock, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(stock) > 0 {
+		return stock, nil
+	}
+
+	var variantExists bool
+	err = s.db.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM variants
+			WHERE variant_code::text = $1 AND is_active = true
+		)
+	`, variantCode).Scan(&variantExists)
+	if err != nil {
+		return nil, err
+	}
+	if !variantExists {
+		return nil, errors.New("variant not found")
+	}
+	return nil, errors.New("warehouse not found for branch")
 }
 
 func (s *Store) CreateInterWarehouseTransfer(in InterWarehouseTransferInput) error {
